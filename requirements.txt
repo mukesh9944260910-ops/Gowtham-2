@@ -1,5 +1,4 @@
 streamlit
+google-genai
 pillow
-numpy
 requests
-# rembg[cpu]   # optional: AI background removal (heavy)
