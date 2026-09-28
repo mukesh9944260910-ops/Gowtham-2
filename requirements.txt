@@ -1,4 +1,4 @@
 streamlit
-google-genai
+gradio_client
 pillow
 requests

@@ -1,62 +1,63 @@
 import io
 import os
+import tempfile
+import time
 
 import requests
 import streamlit as st
-from google import genai
-from google.genai import types
+from gradio_client import Client, handle_file
 from PIL import Image
 
-MODELS = ["gemini-3.1-flash-image-preview",
-          "gemini-3-pro-image-preview",
-          "gemini-2.5-flash-image"]
+SPACE = "yisol/IDM-VTON"  # free public Hugging Face Space
 
-st.set_page_config(page_title="Fit Check Gemini", page_icon="👗", layout="centered")
-st.title("👗 Fit Check (Gemini)")
-st.caption("Unga photo + shirt/dress photo. Gemini body-la potta maari image create pannum.")
-
-key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
-if not key:
-    key = st.text_input("Gemini API key", type="password",
-                        help="aistudio.google.com/apikey-la irundhu edunga")
-if not key:
-    st.stop()
-
-model = st.selectbox("Model", MODELS,
-                     help="Oru model fail aana matha model try pannunga.")
-
-PROMPT = (
-    "Image 1 is a photo of a person. Image 2 is a garment ({kind}: {desc}). "
-    "Edit image 1 so the person is wearing the garment from image 2. "
-    "Keep the person's face, hair, skin tone, body shape, pose, hands and the "
-    "background exactly the same. Only replace the clothing. Make the garment fit "
-    "naturally with realistic folds, sleeves and drape. Keep the garment's exact "
-    "color, pattern and details. Output one photorealistic image."
-)
+st.set_page_config(page_title="Fit Check Free", page_icon="👗", layout="centered")
+st.title("👗 Fit Check (Free AI)")
+st.caption("Unga photo + shirt/dress photo. AI body-la potta maari image create pannum.")
+st.info("Free service, so queue irukkum. 1-3 minutes aagalaam. Konjam porumaiya irunga.")
 
 
-def shrink(img, side=1024):
+def save_tmp(img, max_side=1024):
     img = img.convert("RGB")
-    img.thumbnail((side, side))
-    return img
+    img.thumbnail((max_side, max_side))
+    f = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+    img.save(f, "JPEG", quality=92)
+    f.close()
+    return f.name
 
 
-def tryon(person, garment, kind, desc):
-    client = genai.Client(api_key=key)
-    resp = client.models.generate_content(
-        model=model,
-        contents=[PROMPT.format(kind=kind, desc=desc), shrink(person), shrink(garment)],
-        config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
-    )
-    for cand in resp.candidates or []:
-        for part in cand.content.parts or []:
-            if part.inline_data and part.inline_data.data:
-                return part.inline_data.data
-    raise RuntimeError("Image varala. Model text mattum thirumbi anuppuchu. Vera photo try pannunga.")
+def get_client():
+    token = st.secrets.get("HF_TOKEN", os.getenv("HF_TOKEN"))  # optional
+    try:
+        return Client(SPACE, hf_token=token) if token else Client(SPACE)
+    except TypeError:
+        return Client(SPACE)
+
+
+def run_tryon(person, garment, desc, auto_mask, steps, seed):
+    p, g = save_tmp(person), save_tmp(garment)
+    last = None
+    for attempt in range(1, 4):
+        try:
+            res = get_client().predict(
+                dict={"background": handle_file(p), "layers": [], "composite": None},
+                garm_img=handle_file(g),
+                garment_des=desc,
+                is_checked=auto_mask,
+                is_checked_crop=False,
+                denoise_steps=steps,
+                seed=seed,
+                api_name="/tryon",
+            )
+            with open(res[0], "rb") as f:
+                return f.read()
+        except Exception as e:
+            last = e
+            time.sleep(5 * attempt)
+    raise last
 
 
 st.header("1. Photos")
-me_file = st.file_uploader("Unga photo (clear, nerula paatha maari)",
+me_file = st.file_uploader("Unga photo (nerula paatha maari, clear-a)",
                            type=["jpg", "jpeg", "png", "webp"])
 g_file = st.file_uploader("Shirt / dress photo", type=["jpg", "jpeg", "png", "webp"])
 g_url = st.text_input("...illa direct image link")
@@ -72,50 +73,28 @@ try:
 except Exception as e:
     st.error(f"Garment load aagala: {e}")
 
-c1, c2 = st.columns(2)
-kind = c1.selectbox("Type", ["shirt / top", "dress", "pant / skirt", "jacket"])
-desc = c2.text_input("Short description", "blue cotton shirt")
+desc = st.text_input("Short description", "blue cotton shirt")
+with st.expander("Advanced"):
+    steps = st.slider("Quality steps", 20, 40, 30)
+    seed = st.number_input("Seed", 0, 9999, 42)
+    auto_mask = st.checkbox("Auto mask", True)
 
-d1, d2 = st.columns(2)
+c1, c2 = st.columns(2)
 if me_file:
-    d1.image(me_file, caption="Unga photo")
+    c1.image(me_file, caption="Unga photo")
 if garment:
-    d2.image(garment, caption="Garment")
+    c2.image(garment, caption="Garment")
 
 if st.button("Try it on", type="primary", disabled=not (me_file and garment)):
-    with st.spinner("Gemini try-on nadakkuthu... 10-30 seconds"):
+    with st.spinner("AI try-on nadakkuthu..."):
         try:
-            st.session_state["result"] = tryon(Image.open(me_file), garment, kind, desc)
+            st.session_state["result"] = run_tryon(
+                Image.open(me_file), garment, desc, auto_mask, steps, int(seed))
         except Exception as e:
-            st.error(f"Fail aachu: {e}")
-            st.caption("Quota / 429 error-na, ungal free key-la image models enable illa. "
-                       "Vera model select pannunga illa konjam neram kazhichu try pannunga.")
+            st.error(f"Fail aachu: {e}\n\nSpace busy-a irukkalaam. Konjam neram kazhichu try pannunga.")
 
 if "result" in st.session_state:
     st.header("2. Result")
     st.image(st.session_state["result"], use_container_width=True)
     st.download_button("Save image", st.session_state["result"], "tryon.png", "image/png")
     st.caption("AI preview mattum. Actual fit konjam vera irukkalaam.")
-
-st.header("3. Size recommend")
-SIZES = ["XS", "S", "M", "L", "XL", "XXL"]
-LIM = {"bust": [82, 86, 91, 97, 103, 109],
-       "waist": [64, 68, 73, 79, 85, 91],
-       "hips": [88, 92, 97, 103, 109, 115]}
-s1, s2, s3 = st.columns(3)
-vals = {"bust": s1.number_input("Bust / chest (cm)", 0.0, 200.0, 0.0),
-        "waist": s2.number_input("Waist (cm)", 0.0, 200.0, 0.0),
-        "hips": s3.number_input("Hips (cm)", 0.0, 200.0, 0.0)}
-if st.button("Find my size"):
-    idx = [next((i for i, m in enumerate(LIM[k]) if v <= m), 5)
-           for k, v in vals.items() if v > 0]
-    if not idx:
-        st.warning("Ethavathu oru measurement enter pannunga.")
-    else:
-        best = max(idx)
-        st.success(f"Recommended size: {SIZES[best]}")
-        if max(idx) - min(idx) >= 2:
-            st.info("Measurements size-la vera vera irukku. Stretch fabric paathu select pannunga.")
-        elif best < 5:
-            st.caption(f"Loose fit venumna {SIZES[best + 1]} edukkalaam.")
-st.caption("General size chart. Shop-oda size chart-oda compare pannunga.")
